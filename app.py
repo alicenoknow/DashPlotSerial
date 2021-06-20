@@ -1,29 +1,34 @@
+import atexit
+import json
+from queue import Queue
+from threading import Thread
+
 import dash
-from dash.dependencies import Output, Input
 import dash_core_components as dcc
 import dash_html_components as html
 import plotly.graph_objs as go
+from dash.dependencies import Output, Input
 
-from collections import deque
-import atexit
-
-from utils import Reader
 import config
+from reader import reader_main
+
+# ---------------------------------------- Reader thread ----------------------------------------
+tx_queue = Queue()
+rx_queue = Queue()
+data_reader = Thread(target=reader_main, args=[rx_queue, tx_queue])
+data_reader.daemon = True
 
 
-# ---------------------------------------- Global data ----------------------------------------
-data_reader = Reader()
-timeline = deque(maxlen=config.data_len)
-timeline.append(0)
-data_values = deque(maxlen=config.data_len)
-data_values.append(0)
-lat = 0.0
-lon = 0.0
-current_column = 0
+def start_reader_thread():
+    data_reader.start()
+    answer, args = tx_queue.get()
+    if answer != "OK":
+        print(args)
+        exit(-1)
 
 
 # -------------------------------------- Creating figures -------------------------------------
-def get_data_graph():
+def get_data_graph(data_values, timeline):
     step = (max(data_values) - min(data_values)) / 10
     return go.Figure(
         data=[go.Scatter(
@@ -37,7 +42,7 @@ def get_data_graph():
             yaxis=dict(range=[min(data_values) - step, max(data_values) + step])))
 
 
-def get_map_figure():
+def get_map_figure(lat, lon):
     return go.Figure(
         data=[go.Scattermapbox(
             lat=[lat],
@@ -62,7 +67,8 @@ def get_map_figure():
 
 
 # ----------------------------------------- App layout ----------------------------------------
-app = dash.Dash(__name__)
+external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
+app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
 
 app.layout = html.Div(
     [
@@ -83,9 +89,12 @@ app.layout = html.Div(
         ),
         dcc.Graph(
             id='map-graph',
-            figure=get_map_figure(),
+            figure=get_map_figure(50.0, 50.0),
             config={"displayModeBar": True, "scrollZoom": True}
         ),
+        dcc.Store(id='time', data=0),
+        dcc.Store(id='column', data=0)
+
     ],
     style={'padding': '0px 10px 15px 10px',
            'marginLeft': 'auto', 'marginRight': 'auto',
@@ -94,44 +103,55 @@ app.layout = html.Div(
 
 
 # -------------------------------------- Callbacks -------------------------------------
+@app.callback(Output('column', 'data'),
+              [Input('columns-dropdown', 'value')])
+def update_column(column):
+    return json.dumps(column)
+
+
+@app.callback(Output('time', 'data'),
+              [Input('update', 'n_intervals')])
+def update_time(time):
+    return json.dumps(time)
+
+
 @app.callback(Output('data-graph', 'figure'),
               Output('map-graph', 'figure'),
-              [Input('update', 'n_intervals')])
-def update_graphs(input_data):
-    global lat, lon, timeline, data_values
-    lat, lon, values = data_reader.parse_line()
-    timeline.append(max(timeline) + 1)
-    data_values.append(values[current_column])
+              [Input('time', 'data'), Input('column', 'data')])
+def update_graphs(time, column):
+    curr_time = json.loads(time)
+    if curr_time is None:
+        return dash.no_update, dash.no_update
 
-    graph_figure = get_data_graph()
-    map_figure = get_map_figure()
+    curr_column = json.loads(column)
+    lat, lon, values = get_data()
+
+    data_values = values[curr_column]
+    timeline = [i for i in range(max(0, curr_time-config.data_len), min(curr_time+1, curr_time+len(data_values)))]
+
+    graph_figure = get_data_graph(data_values, timeline)
+    map_figure = get_map_figure(lat, lon)
     return graph_figure, map_figure
 
 
-@app.callback(
-    Output('data-graph', 'figure'),
-    [Input('columns-dropdown', 'value')])
-def update_output(value):
-    global current_column, timeline, data_values
-    if current_column != value:
-        curr_time = max(timeline)
-        current_column = value
-        timeline.clear()
-        data_values.clear()
-        _, _, values = data_reader.parse_line()
-        timeline.append(curr_time + 1)
-        data_values.append(values[current_column])
-
-    return get_data_graph()
+def get_data():
+    rx_queue.put(('DATA', {}))
+    answer, args = tx_queue.get()
+    if answer == 'DATA':
+        return args["lat"], args["lon"], args["values"]
+    else:
+        exit(-1)
 
 
 # -------------------------------------------- Exit -------------------------------------------
 def on_exit():
-    if data_reader:
-        data_reader.close()
+    if data_reader.is_alive():
+        rx_queue.put(('EXIT', {}))
+        data_reader.join()
 
 
 # -------------------------------------------- Run -------------------------------------------
 if __name__ == '__main__':
     atexit.register(on_exit)
+    start_reader_thread()
     app.run_server(debug=False)
