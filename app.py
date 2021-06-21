@@ -43,7 +43,7 @@ def get_data_graph(data_values, timeline):
 
 
 def get_map_figure(lat, lon):
-    return go.Figure(
+    map_fig = go.Figure(
         data=[go.Scattermapbox(
             lat=[lat],
             lon=[lon],
@@ -55,7 +55,7 @@ def get_map_figure(lat, lon):
             uirevision='map-graph',
             hovermode='closest',
             mapbox=dict(
-                style='light',
+                style='satellite',
                 accesstoken=config.mapbox_token,
                 bearing=0,
                 center=go.layout.mapbox.Center(
@@ -64,7 +64,7 @@ def get_map_figure(lat, lon):
                 ),
                 pitch=0,
                 zoom=10)))
-
+    return map_fig
 
 # ----------------------------------------- App layout ----------------------------------------
 external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
